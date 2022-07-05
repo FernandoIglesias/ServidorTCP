@@ -1,0 +1,216 @@
+#include <unistd.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <stdlib.h>
+#include <sys/select.h>
+#include <string.h>
+#include <errno.h>
+
+#define T 16
+
+//prototipos de funciones
+void copia_fdset(fd_set * destino, fd_set * origen, int maxFDmasUno);
+void print_fdset(char * nombre, fd_set * fds, int maxFDmasUno);
+ssize_t write_n(int fd, void * mensaje, size_t longitud_mensaje);
+
+int main(int argc, char * argv[])
+{
+	//1.- Control de argumentos de entrada
+	if (argc < 3) {
+		printf("Uso: %s <f1> <f2>\n", argv[0]);
+		return -1;
+	}
+	
+	//2.- Descriptores para fifos y fichero
+	int f1, f2, fd;
+
+
+	//3.- Apertura de fifos
+	printf("Esperando la apertura de la f1 ...\n");	
+	//Abrimos las fifos de entrada y salida para los clientes
+	// se asumen creadas
+	if ((f1 = open(argv[1], O_RDONLY)) < 0) {
+		perror("open f1");
+		exit(-1);
+	}
+	
+	printf("Esperando la apertura de la f2 ...\n");
+	if ((f2 = open(argv[2], O_RDONLY)) < 0) {
+		perror("open f2");
+		exit(-1);
+	}
+
+	if ((fd = open("log.txt", O_WRONLY | O_CREAT | O_APPEND, 0644)) < 0)
+	{
+		perror("open fd");
+		return -1;
+	}
+
+	
+	int leidos, r;
+	char b[T];
+
+	// Estructuras de datos para el select
+	fd_set rfd, rfd_mod;
+	FD_ZERO(&rfd);
+	FD_SET(f1, &rfd);
+	FD_SET(f2, &rfd);
+
+	//int max = getdtablesize();
+	//int max = FD_SETSIZE;
+	int max;// = f1 > f2 ? f1 : f2;
+	if (f1 > f2) 
+		max = f1;
+	else 
+		max = f2;
+
+	struct timeval t, t_mod;
+	t.tv_sec = 10;
+	t.tv_usec = 0;
+
+	int conectados = 2, l1,l2;
+	
+	while (conectados > 0) {
+		printf("Esperando la datos de clientes ...\n");
+		//creamos copias
+		copia_fdset(&rfd_mod, &rfd, max+1);
+		t_mod = t;
+		int r = select(max+1, &rfd_mod, NULL, NULL, &t_mod);
+		if (r < 0) {
+			perror("select");
+			exit(1);
+		}
+
+		if (r == 0) {
+			printf("Temporizador expirado\n");
+			continue;
+		}
+
+		if (FD_ISSET(f1, &rfd_mod)) {
+			l1 = read(f1, b, T-1);
+			if (l1 < 0) {
+				perror("read");
+				exit(1);
+			} else if (l1 > 0) {
+				if (write_n(fd,b,l1) != l1) {
+					perror("write_n");
+					exit(1);
+				}
+			} else {
+				FD_CLR(f1, &rfd);
+				conectados--;
+			}
+		}
+		
+		if (FD_ISSET(f2, &rfd_mod)) {
+			l2 = read(f2, b, T-1);
+			if (l2 < 0) {
+				perror("read");
+				exit(1);
+			} else if (l2 > 0) {
+				if (write_n(fd,b,l2) != l2) {
+					perror("write_n");
+					exit(1);
+				}
+			} else {
+				FD_CLR(f2, &rfd);
+				conectados--;
+			}
+		}
+
+
+
+		
+
+		
+	}
+
+	if (close(f1) < 0) {
+		perror("close f1");
+		close(f2);
+		exit(-1);
+	}
+	
+	if (close(f2) < 0) {
+		perror("close f2");
+		exit(-1);
+	}
+	
+	return 0;
+
+}
+
+/**
+ * Funciones auxiliares
+ */
+// -> memset(&destino, &origen, sizeof(fd_set));
+ void copia_fdset(fd_set * destino, fd_set * origen, int maxFDmasUno) {
+	 //inicializo el destino
+	 FD_ZERO(destino);
+	 //recorro todos los posibles descriptores, y añado los que estén en 
+	 //el origen
+	 for (int i = 0; i < maxFDmasUno; i++) 
+		if (FD_ISSET(i,origen)) 
+			FD_SET(i, destino);
+}
+
+void print_fdset(char * nombre, fd_set * fds, int maxFDmasUno) {
+	 //recorro todos los posibles descriptores, e imprimo los que estén activos
+	 printf("%s = {", nombre);
+	 for (int i = 0; i < maxFDmasUno; i++) 
+		if (FD_ISSET(i,fds)) 
+			printf("fd%d,", i);
+	printf("}\n");
+}
+
+
+ssize_t read_n(int fd, void * mensaje, size_t longitud_mensaje) {
+  ssize_t a_leer = longitud_mensaje;
+  ssize_t total_leido = 0;
+  ssize_t leido;
+  
+  do {
+    errno = 0;
+    leido = read(fd, mensaje + total_leido, a_leer);
+    if (leido >= 0) {
+      total_leido += leido;
+      a_leer -= leido;
+    }
+  } while((
+      (leido > 0) && (total_leido < longitud_mensaje)) ||
+      (errno == EINTR));
+  
+  if (total_leido > 0) {
+    return total_leido;
+  } else {
+    /* Para permitir que devuelva un posible error en la llamada a read() */
+    return leido;
+  }
+}
+
+ssize_t write_n(int fd, void * mensaje, size_t longitud_mensaje) {
+  ssize_t a_escribir = longitud_mensaje;
+  ssize_t total_escrito = 0;
+  ssize_t escrito;
+  
+  do {
+    errno = 0;
+    escrito = write(fd, mensaje + total_escrito, a_escribir);
+    if (escrito >= 0) {
+      total_escrito += escrito ;
+      a_escribir -= escrito ;
+    }
+  } while(
+        ((escrito > 0) && (total_escrito < longitud_mensaje)) ||
+        (errno == EINTR));
+  
+  if (total_escrito > 0) {
+    return total_escrito;
+  } else {
+    /* Para permitir que devuelva un posible error de la llamada a write */
+    return escrito;
+  }
+}
+
