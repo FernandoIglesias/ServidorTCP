@@ -1,0 +1,230 @@
+#include <unistd.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <stdlib.h>
+#include <sys/select.h>
+#include <string.h>
+#include <errno.h>
+
+#define T 512
+
+/**
+ * Prototipos de funciones auxiliares
+ */
+ssize_t read_n(int fd, void * mensaje, size_t longitud_mensaje);
+ssize_t write_n(int fd, void * mensaje, size_t longitud_mensaje);
+void leeFifo(int fifo, int fd, int * conectados, char * prefijo);
+
+
+/**
+ * Servidor que lee a la vez por dos fifos cuyos nombres se pasan como
+ * argumento, y por cada una se atiende a un cliente. Éstos le 
+ * envían cadenas de texto con una descripción de un evento. El servidor 
+ * lee las cadenas de las fifos y las guarda en un fichero de logs.
+ * Cuando ambos clientes se desconectan, el servidor se cierra.
+ * 
+ * El fichero donde se guardan los eventos se denomina "log.txt" y,
+ * si no existe, se crea, y si existe, se añade contenido por el final.
+ */
+int main(int argc, char * argv[])
+{
+	//1.- Apertura de ficheros y fifos
+	//2.- Iteramos leyendo de fifo_fich1 y fifo_fich2
+	//3.- Por cada lectura, se guarda en fichero con el prefijo
+	//    correspondiente
+	//4.- Mientras que haya un cliente conectado, hay que seguir leyendo
+	//5.- Chapamos
+	
+	if (argc < 3) {
+		printf("Uso: %s <fifo1> <fifo2>\n", argv[0]);
+		return -1;
+	}
+	
+	//fifos
+	int fd, fifo1, fifo2;
+
+	
+	if ((fd = open("log.txt", O_WRONLY | O_CREAT | O_APPEND, 0644)) < 0)
+	{
+		perror("open fd");
+		return -1;
+	}
+	
+	//control de finalización del bucle
+	int conectados = 0;
+
+
+	printf("Esperando a cliente 1...\n");
+	
+	//Abrimos las fifos de entrada y salida para los clientes
+	// se asumen creadas
+	if ((fifo1 = open(argv[1], O_RDONLY)) < 0)
+	{
+		perror("open fifo1");
+		return -1;
+	}
+	
+	printf("Esperando a cliente 2...\n");
+	if ((fifo2 = open(argv[2], O_RDONLY)) < 0)
+	{
+		perror("open fifo2");
+		return -1;
+	}
+	printf("Guardando información de logs...\n");
+	
+	//actualizamos el nº de clientes conectdos
+	conectados = 2;
+
+	
+	//bucle del servidor
+	char b[T];
+	int l1, l2;
+	while(conectados > 0) {
+		l1 = read(fifo1, b, T-1);
+		if (l1 < 0) {
+			perror("read");
+			exit(1);
+		} else if (l1 > 0) {
+			if (write_n(fd,b,l1) != l1) {
+				perror("write_n");
+				exit(1);
+			}
+		} else {
+			conectados--;
+		}
+
+		l2 = read(fifo2, b, T-1);
+		if (l1 < 0) {
+			perror("read");
+			exit(1);
+		} else if (l1 > 0) {
+			if (write_n(fd,b,l2) != l2) {
+				perror("write_n");
+				exit(1);
+			}
+		} else {
+			conectados--;
+		}
+	
+	}
+	//cerramos
+	if (close(fifo1) < 0) {
+		perror("close");
+		return -1;
+	}
+	
+	if (close(fifo2) < 0) {
+		perror("close");
+		return -1;
+	}
+		
+	if (close(fd) < 0) {
+		perror("close");
+		return -1;
+	}
+	
+	return 0;
+
+}
+
+/**
+ * Funciones auxiliares
+ */
+ 
+void leeFifo(int fifo, int fd, int * conectados, char * prefijo) {
+	//Si está listo para lectura, leemos
+	int leidos, longitud;
+	char buffer[T];
+	
+	//leemos de la fifo
+	leidos = read_n(fifo, &longitud, sizeof(longitud));
+		
+	//¿Qué puede ocurrir atendiendo al valor devuelto por read_n?
+	if (leidos < 0) { //error
+		perror("read longitud");
+		exit(-1);
+	} else if (leidos == 0) {
+		//fifo cerrada
+		(*conectados) --;
+	} else if (leidos != sizeof(longitud)) {
+		//error
+		perror("read longitud");
+		exit(-1);
+	} else {
+		//podemos leer la cadena de caracteres
+		leidos = read_n(fifo, buffer,longitud);
+		if (leidos < 0) {
+			//error
+			perror("read buffer 1");
+			exit(-1);
+		} else if (leidos == 0) {
+			//fifo cerrada
+			//sacamos al descriptor del conjunto de descriptores
+			(*conectados) --;
+		} else if (leidos != longitud) {
+			//error
+			perror("read buffer 2");
+			exit(-1);
+		} else {
+			//lectura correcta
+			//metemos el '\0'
+			//buffer[longMensaje] = '\0';
+			write_n(fd, prefijo, strlen(prefijo));
+			write_n(fd, buffer, longitud);
+			write_n(fd, "\n", 1);
+		}
+	}
+	
+}
+ 
+
+ssize_t read_n(int fd, void * mensaje, size_t longitud_mensaje) {
+  ssize_t a_leer = longitud_mensaje;
+  ssize_t total_leido = 0;
+  ssize_t leido;
+  
+  do {
+    errno = 0;
+    leido = read(fd, mensaje + total_leido, a_leer);
+    if (leido >= 0) {
+      total_leido += leido;
+      a_leer -= leido;
+    }
+  } while((
+      (leido > 0) && (total_leido < longitud_mensaje)) ||
+      (errno == EINTR));
+  
+  if (total_leido > 0) {
+    return total_leido;
+  } else {
+    /* Para permitir que devuelva un posible error en la llamada a read() */
+    return leido;
+  }
+}
+
+ssize_t write_n(int fd, void * mensaje, size_t longitud_mensaje) {
+  ssize_t a_escribir = longitud_mensaje;
+  ssize_t total_escrito = 0;
+  ssize_t escrito;
+  
+  do {
+    errno = 0;
+    escrito = write(fd, mensaje + total_escrito, a_escribir);
+    if (escrito >= 0) {
+      total_escrito += escrito ;
+      a_escribir -= escrito ;
+    }
+  } while(
+        ((escrito > 0) && (total_escrito < longitud_mensaje)) ||
+        (errno == EINTR));
+  
+  if (total_escrito > 0) {
+    return total_escrito;
+  } else {
+    /* Para permitir que devuelva un posible error de la llamada a write */
+    return escrito;
+  }
+}
+
